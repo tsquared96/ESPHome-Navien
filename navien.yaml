@@ -3,51 +3,59 @@
 ################################################################################ 
 # 
 # 5/28/2024 revision to gas m3, ccf, and therms per discussion on community forum
+# 11/25/2024 updated from input of the community forum ejarrett and PaullJ
+# 
 #
-substitutions:
-  comment: "(Navien Hot Water Heater) -- Device host: redacted"
-  friendly_name: Navien Water Heater
-  logger_level: WARN
-
-
-# Include basic info in all ESP Home Configs
-# Basic Info Includes
-# logger:
-# wifi:
-# ap:
-# web_server:
-# captive_portal:
-# button: to restart the device
-
-<<: !include .base1.yaml
-
-binary_sensor:
-  - platform: status
-    name: Status
-    internal: True
+################################################################################
+####                                  TO DO                                 ####
+################################################################################  
+#
+# Modify setpoint to be an input text or value
+# remove fake switch
+#
 
 esphome:
-  name: navien
-  friendly_name: Navien Water Heater
+  name: m5-atom-navien
+  friendly_name: m5-atom-navien
 
 esp32:
   board: esp32dev
   framework:
     type: arduino
 
-# Enable logging
-logger:
-  level: ${logger_level}
-  baud_rate: 0 #disable logging over uart
-
 
 # Enable Home Assistant API
 api:
   encryption:
-    key: "redacted"
+    key: "RAkMQpfd0bpZn2+N8zs2oFWpKwqeBQDlxM9/b5JxLd0="
 
 ota:
-  password: "redacted"
+  - platform: esphome
+    password: "076f77bac116013eccb129ccdf428030"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "M5-Atom-Navien Fallback Hotspot"
+    password: "dqjfxasjVlpb"
+
+captive_portal:
+
+web_server: 
+
+# Enable restart button
+
+button:
+  - platform: restart
+    name: Restart
+
+binary_sensor:
+  - platform: status
+    name: Status
+    internal: True  
 
 globals:
    - id: init_set_temp
@@ -62,8 +70,8 @@ globals:
 
 uart:
   id: uart_bus
-  tx_pin: 1
-  rx_pin: 3
+  tx_pin: 19
+  rx_pin: 22
   baud_rate: 19200
   data_bits: 8
   stop_bits: 1
@@ -112,13 +120,13 @@ uart:
           id(uart_water_byte27).publish_state(bytes[27]);
           id(uart_water_byte28).publish_state(bytes[28]);
           id(uart_water_byte29).publish_state(bytes[29]);
-          id(uart_water_byte30).publish_state(bytes[30]);
-          id(uart_water_byte31).publish_state(bytes[31]);
+          id(uart_water_byte30).publish_state(bytes[30]); // low byte related to gas usage? Per ejarrett in the community forum
+          id(uart_water_byte31).publish_state(bytes[31]); // high byte related to gas usage? per ejarrett in the community forum
           id(uart_water_byte32).publish_state(bytes[32]);
           id(uart_water_byte33).publish_state(bytes[33]);
           id(uart_water_byte34).publish_state(bytes[34]);
           id(uart_water_byte35).publish_state(bytes[35]);
-          id(uart_water_byte36).publish_state(bytes[36]);
+          id(uart_water_byte36).publish_state(bytes[36]); 
           id(uart_water_byte37).publish_state(bytes[37]);
           id(uart_water_byte38).publish_state(bytes[38]);
           id(uart_water_byte39).publish_state(bytes[39]);
@@ -146,7 +154,7 @@ uart:
           id(uart_gas_byte17).publish_state(bytes[17]);
           id(uart_gas_byte18).publish_state(bytes[18]);
           id(uart_gas_byte19).publish_state(bytes[19]);
-          id(uart_gas_byte20).publish_state(bytes[20]);
+          id(heater_capacity).publish_state(bytes[20]); //May be the same as kcal high byte - BYTE 23 below (Operating Capacity? Per PaullJ in the community forum)
           id(uart_gas_byte21).publish_state(bytes[21]);
           id(low_byte_kcal).publish_state(bytes[22]); //Low byte current gas usage in kcal
           id(high_byte_kcal).publish_state(bytes[23]); //High byte current gas usage in kcal
@@ -156,14 +164,14 @@ uart:
           id(uart_gas_byte27).publish_state(bytes[27]);
           id(uart_gas_byte28).publish_state(bytes[28]);
           id(uart_gas_byte29).publish_state(bytes[29]);
-          id(uart_gas_byte30).publish_state(bytes[30]);
-          id(uart_gas_byte31).publish_state(bytes[31]);
+          id(uart_gas_byte30).publish_state(bytes[30]); //slowly increasing low byte? per ejarrett in the community forum
+          id(uart_gas_byte31).publish_state(bytes[31]); //high byte for above?
           id(uart_gas_byte32).publish_state(bytes[32]);
           id(uart_gas_byte33).publish_state(bytes[33]);
           id(uart_gas_byte34).publish_state(bytes[34]);
           id(uart_gas_byte35).publish_state(bytes[35]);
-          id(uart_gas_byte36).publish_state(bytes[36]);
-          id(uart_gas_byte37).publish_state(bytes[37]);
+          id(operating_time_low_byte).publish_state(bytes[36]); // Operating Time Per ejarrett in the community forum Low Byte (Total Operating Hours Lifetime - per PauLLJ in the community forum?)
+          id(operating_time_high_byte).publish_state(bytes[37]); // Operating Time per ejarrett in the community forum High Byte?
           id(uart_gas_byte38).publish_state(bytes[38]);
           id(uart_gas_byte39).publish_state(bytes[39]);
           id(uart_gas_byte40).publish_state(bytes[40]);          
@@ -329,7 +337,7 @@ sensor:
     lambda: |-
       return (id(water_flow_lpm).state * 0.2642);
   - platform: template
-    name: "WByte_19 Unknown Flow"
+    name: "?Unknown Flow?"
     id: uart_water_byte19
     # internal: True
   - platform: template
@@ -349,7 +357,7 @@ sensor:
     id: uart_water_byte23
     internal: True
   - platform: template
-    name: "WByte_24 Sys Status"
+    name: "?Sys Status?"
     id: uart_water_byte24
     # internal: True
   - platform: template
@@ -500,9 +508,9 @@ sensor:
     id: uart_gas_byte19
     internal: True
   - platform: template
-    name: "GByte_20"
-    id: uart_gas_byte20
-    internal: True
+    name: "?Heater Capacity?"
+    id: heater_capacity
+    # internal: True
   - platform: template
     name: "GByte_21"
     id: uart_gas_byte21
@@ -564,13 +572,13 @@ sensor:
     id: uart_gas_byte35
     internal: True
   - platform: template
-    name: "GByte_36"
-    id: uart_gas_byte36
-    internal: True
+    name: "?Operating Time - Lifetime (Low Byte)?"
+    id: operating_time_low_byte
+    # internal: True
   - platform: template
-    name: "GByte_37"
-    id: uart_gas_byte37
-    internal: True
+    name: "?Operating Time - Lifetime (High Byte)?"
+    id: operating_time_high_byte
+    # internal: True
   - platform: template
     name: "GByte_38"
     id: uart_gas_byte38
@@ -637,5 +645,16 @@ sensor:
     state_class: "measurement"
     lambda: |-
       return (id(high_byte_kcal).state*256) + (id(low_byte_kcal).state); 
+  - platform: template
+    name: "Total Lifetime Hours"
+    id: total_hours
+    icon: mdi:gas-burner
+    unit_of_measurement: h
+    accuracy_decimals: 2
+    state_class: "measurement"
+    lambda: |-
+      return (id(operating_time_high_byte).state*256) + (id(operating_time_low_byte).state);
 
 
+
+    
