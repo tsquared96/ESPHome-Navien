@@ -1,660 +1,151 @@
-################################################################################
-####                            REVISION HISTORY                            ####
-################################################################################ 
-# 
-# 5/28/2024 revision to gas m3, ccf, and therms per discussion on community forum
-# 11/25/2024 updated from input of the community forum ejarrett and PaullJ
-# 
-#
-################################################################################
-####                                  TO DO                                 ####
-################################################################################  
-#
-# Modify setpoint to be an input text or value
-# remove fake switch
-#
+# Navien Water Heater ESPHome Configuration
+# Converted from tsquared96/esphome-navien to htumanyan/navien
+# Board: ESP32 Dev (esp32dev) with TX=19, RX=22
+
+substitutions:
+  device_name: my-navien
+  friendly_name: "Navien Water Heater"
 
 esphome:
-  name: m5-atom-navien
-  friendly_name: m5-atom-navien
+  name: my-navien
+  friendly_name: "Navien Water Heater"
 
 esp32:
   board: esp32dev
   framework:
     type: arduino
 
+# Import htumanyan's Navien external component from GitHub
+external_components:
+  - source: github://htumanyan/navien
+    components: [navien]
+    refresh: 1d
 
-# Enable Home Assistant API
-api:
-  encryption:
-    key: "RAkMQpfd0bpZn2+N8zs2oFWpKwqeBQDlxM9/b5JxLd0="
-
-ota:
-  - platform: esphome
-    password: "076f77bac116013eccb129ccdf428030"
-
+# Network configuration
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: "M5-Atom-Navien Fallback Hotspot"
-    password: "dqjfxasjVlpb"
+    ssid: "${device_name}-fallback"
+    password: !secret wifi_password
 
 captive_portal:
 
-web_server: 
+# Web server for local access
+web_server:
+  port: 80
 
-# Enable restart button
+# Logging - disable UART logging to avoid conflicts with RS-485
+logger:
+  level: DEBUG  # Change to INFO after testing
+  baud_rate: 0
 
-button:
-  - platform: restart
-    name: Restart
+# Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
 
+# OTA updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# UART configuration for RS-485 communication
+uart:
+  tx_pin: GPIO19
+  rx_pin: GPIO22
+  baud_rate: 19200
+  stop_bits: 1
+  parity: none
+  rx_buffer_size: 8192
+  id: navien_uart
+
+# Diagnostic sensors
+text_sensor:
+  - platform: version
+    name: ${friendly_name} ESPHome Version
+    hide_timestamp: true
+  - platform: wifi_info
+    ip_address:
+      name: ${friendly_name} IP Address
+    mac_address:
+      name: ${friendly_name} Mac
+
+sensor:
+  - platform: uptime
+    name: ${friendly_name} Uptime
+  - platform: wifi_signal
+    name: ${friendly_name} WiFi Signal
+
+  # Navien water heater sensors
+  - platform: navien
+    name: ${friendly_name}
+    uart_id: navien_uart
+    target_temperature:
+      name: ${friendly_name} Target Temp
+      filters:
+        - lambda: return x * (9.0/5.0) + 32.0;
+      unit_of_measurement: "°F"
+    inlet_temperature:
+      name: ${friendly_name} Inlet Temp
+      filters:
+        - lambda: return x * (9.0/5.0) + 32.0;
+      unit_of_measurement: "°F"
+    outlet_temperature:
+      name: ${friendly_name} Outlet Temp
+      filters:
+        - lambda: return x * (9.0/5.0) + 32.0;
+      unit_of_measurement: "°F"
+    water_flow:
+      name: ${friendly_name} Water Flow
+      filters:
+        - lambda: return x / 3.785;
+      unit_of_measurement: "GPM"
+    water_utilization:
+      name: ${friendly_name} Water Capacity
+      unit_of_measurement: "%"
+    gas_total:
+      name: ${friendly_name} Total Gas Usage
+      filters:
+        - lambda: return x * 9131.0 / 25193.0 / 10.0;
+      unit_of_measurement: "Therms"
+      accuracy_decimals: 1
+    gas_current:
+      name: ${friendly_name} Current Gas Usage
+      filters:
+        - lambda: return x * 3.9680;
+      unit_of_measurement: "BTU"
+      accuracy_decimals: 1
+    conn_status:
+      name: ${friendly_name} Connection Status
+    recirc_status:
+      name: ${friendly_name} Recirculation Status
+
+# Power on/off switch
+switch:
+  - platform: navien
+    name: ${friendly_name} Power
+
+# Status sensor (required by ESPHome API component)
 binary_sensor:
   - platform: status
-    name: Status
-    internal: True  
+    name: ${friendly_name} Status
 
-globals:
-   - id: init_set_temp
-     type: int
-     restore_value: yes
-     initial_value: '140'
+# Hot button for recirculation
+button:
+  - platform: restart
+    name: ${friendly_name} Restart
+  - platform: navien
+    name: ${friendly_name} Hot Button
+    id: navien_hot_button
 
-
-#################################
-#### UART SETUP/DECODE BYTES ####
-#################################
-
-uart:
-  id: uart_bus
-  tx_pin: 19
-  rx_pin: 22
-  baud_rate: 19200
-  data_bits: 8
-  stop_bits: 1
-  parity: NONE
-  debug:
-    direction: BOTH
-    dummy_receiver: True
-    after:
-      delimiter: "\n"
-    sequence:
-      - lambda: |-
-          //
-          // SPECIAL THANKS TO @suva on the HomeAssistant forum for Decoding these.
-          // https://community.home-assistant.io/t/navien-hot-water-heater-navilink/330044/92
-          //  
-          UARTDebug::log_string(direction, bytes);
-          if (bytes[0] == 247 && bytes[1] == 5 && bytes[2] == 80 && bytes[3] == 80 && bytes[4] == 144 && bytes[5] == 34) {
-          // Water information
-          id(uart_water_byte0).publish_state(bytes[0]); //Common To all Packets
-          id(uart_water_byte1).publish_state(bytes[1]); //Common To all Packets
-          id(uart_water_byte2).publish_state(bytes[2]); //Packet id Byte 0
-          id(uart_water_byte3).publish_state(bytes[3]); //Packet id Byte 1
-          id(uart_water_byte4).publish_state(bytes[4]); //Packet id Byte 2
-          id(uart_water_byte5).publish_state(bytes[5]); //Data Length
-          id(uart_water_byte6).publish_state(bytes[6]); 
-          id(uart_water_byte7).publish_state(bytes[7]);
-          id(uart_water_byte8).publish_state(bytes[8]);
-          id(uart_water_byte9).publish_state(bytes[9]); // System Power: high nibble: Unknown (values 0 and 0x20 observed); low nibble = 0=off 0x5=on
-          id(uart_water_byte10).publish_state(bytes[10]);
-          id(set_temp_read).publish_state((bytes[11]/2)); //Set temp - measured in 0.5 degrees C.
-          id(outlet_temp).publish_state((bytes[12]/2));  //Outlet temp - measured in 0.5 degrees C.
-          id(inlet_temp).publish_state((bytes[13]/2)); //Inlet temp - measured in 0.5 degrees C.
-          id(uart_water_byte14).publish_state(bytes[14]);
-          id(uart_water_byte15).publish_state(bytes[15]);
-          id(uart_water_byte16).publish_state(bytes[16]);
-          id(uart_water_byte17).publish_state(bytes[17]);
-          id(water_flow_lpm).publish_state(bytes[18] / 10); //Flow rate - measured in 0.1 liters per minute (divide by 10 to get LPM)
-          id(uart_water_byte19).publish_state(bytes[19]);
-          id(uart_water_byte20).publish_state(bytes[20]);
-          id(uart_water_byte21).publish_state(bytes[21]);
-          id(uart_water_byte22).publish_state(bytes[22]);
-          id(uart_water_byte23).publish_state(bytes[23]);
-          id(uart_water_byte24).publish_state(bytes[24]); //System status. Probably a bitwise field. Partially decoded: display units: 0x08 position: 1=metric 0=imperial. 0x02 position: 1=weekly 0=hotbutton
-          id(uart_water_byte25).publish_state(bytes[25]);
-          id(uart_water_byte26).publish_state(bytes[26]);
-          id(uart_water_byte27).publish_state(bytes[27]);
-          id(uart_water_byte28).publish_state(bytes[28]);
-          id(uart_water_byte29).publish_state(bytes[29]);
-          id(uart_water_byte30).publish_state(bytes[30]); // low byte related to gas usage? Per ejarrett in the community forum
-          id(uart_water_byte31).publish_state(bytes[31]); // high byte related to gas usage? per ejarrett in the community forum
-          id(uart_water_byte32).publish_state(bytes[32]);
-          id(uart_water_byte33).publish_state(bytes[33]);
-          id(uart_water_byte34).publish_state(bytes[34]);
-          id(uart_water_byte35).publish_state(bytes[35]);
-          id(uart_water_byte36).publish_state(bytes[36]); 
-          id(uart_water_byte37).publish_state(bytes[37]);
-          id(uart_water_byte38).publish_state(bytes[38]);
-          id(uart_water_byte39).publish_state(bytes[39]);
-          id(uart_water_byte40).publish_state(bytes[40]);          
-          }
-          else if (bytes[0] == 247 && bytes[1] == 5 && bytes[2] == 80 && bytes[3] == 15 && bytes[4] == 144 && bytes[5] == 42) {
-          // Gas information
-          id(uart_gas_byte0).publish_state(bytes[0]); //Common to All Packets
-          id(uart_gas_byte1).publish_state(bytes[1]); //Common to All Packets
-          id(uart_gas_byte2).publish_state(bytes[2]); //Packet id Byte 0
-          id(uart_gas_byte3).publish_state(bytes[3]); //Packet id Byte 1
-          id(uart_gas_byte4).publish_state(bytes[4]); //Packet id Byte 2
-          id(uart_gas_byte5).publish_state(bytes[5]); //Data Length
-          id(uart_gas_byte6).publish_state(bytes[6]);
-          id(uart_gas_byte7).publish_state(bytes[7]);
-          id(uart_gas_byte8).publish_state(bytes[8]);
-          id(uart_gas_byte9).publish_state(bytes[9]);
-          id(uart_gas_byte10).publish_state(bytes[10]);
-          id(uart_gas_byte11).publish_state(bytes[11]);
-          id(uart_gas_byte12).publish_state(bytes[12]);
-          id(uart_gas_byte13).publish_state(bytes[13]);                    
-          id(uart_gas_byte14).publish_state(bytes[14]);
-          id(uart_gas_byte15).publish_state(bytes[15]);
-          id(uart_gas_byte16).publish_state(bytes[16]);
-          id(uart_gas_byte17).publish_state(bytes[17]);
-          id(uart_gas_byte18).publish_state(bytes[18]);
-          id(uart_gas_byte19).publish_state(bytes[19]);
-          id(heater_capacity).publish_state(bytes[20]); //May be the same as kcal high byte - BYTE 23 below (Operating Capacity? Per PaullJ in the community forum)
-          id(uart_gas_byte21).publish_state(bytes[21]);
-          id(low_byte_kcal).publish_state(bytes[22]); //Low byte current gas usage in kcal
-          id(high_byte_kcal).publish_state(bytes[23]); //High byte current gas usage in kcal
-          id(total_gas_use_m3).publish_state(bytes[24] / 10); //Total gas usage in 0.1m^3 (divide by 10 to get m^3)
-          id(uart_gas_byte25).publish_state(bytes[25]);
-          id(uart_gas_byte26).publish_state(bytes[26]);
-          id(uart_gas_byte27).publish_state(bytes[27]);
-          id(uart_gas_byte28).publish_state(bytes[28]);
-          id(uart_gas_byte29).publish_state(bytes[29]);
-          id(uart_gas_byte30).publish_state(bytes[30]); //slowly increasing low byte? per ejarrett in the community forum
-          id(uart_gas_byte31).publish_state(bytes[31]); //high byte for above?
-          id(uart_gas_byte32).publish_state(bytes[32]);
-          id(uart_gas_byte33).publish_state(bytes[33]);
-          id(uart_gas_byte34).publish_state(bytes[34]);
-          id(uart_gas_byte35).publish_state(bytes[35]);
-          id(operating_time_low_byte).publish_state(bytes[36]); // Operating Time Per ejarrett in the community forum Low Byte (Total Operating Hours Lifetime - per PauLLJ in the community forum?)
-          id(operating_time_high_byte).publish_state(bytes[37]); // Operating Time per ejarrett in the community forum High Byte?
-          id(uart_gas_byte38).publish_state(bytes[38]);
-          id(uart_gas_byte39).publish_state(bytes[39]);
-          id(uart_gas_byte40).publish_state(bytes[40]);          
-          } else {
-          // Handle other cases
-          }
-      
-
-###############################
-#### ENABLE/DISABLE HEATER ####
-###############################
-
-switch:
-  - platform: template
-    name: "HW Heater On/Off"
-    id: navien_switch
-    restore_mode: ALWAYS_ON
-    icon: mdi:water-boiler
-    lambda: |-
-      if ((id(uart_water_byte9).state) == 5) {
-        return true;
-        id(navien_switch).publish_state(true);
-      } else {
-        return false;
-        id(navien_switch).publish_state(false);
-      }
-    turn_on_action:
-      - uart.write: !lambda 
-          return {0xf7, 0x05, 0x0f, 0x50, 0x10, 0x0c, 0x4f, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xce};
-          id(navien_switch).publish_state(true);
-    turn_off_action:
-      - uart.write: !lambda 
-          return {0xf7, 0x05, 0x0f, 0x50, 0x10, 0x0c, 0x4f, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa};
-          id(navien_switch).publish_state(false);
-  
-  - platform: template
-    name: "Fake Thermostat Switch"
-    id: fake_switch
-    restore_mode: ALWAYS_ON
-    optimistic: True
-    internal: True
-
-
-####################################################################
-#### SETPOINT ENTRY TEMPLATE  - STILL WORKING ON THIS 4/29/2024 ####
-####################################################################
-
+# Climate entity for temperature control
 climate:
-  - platform: thermostat
-    name: "Climate Controller"
+  - platform: navien
+    id: navien_climate
+    name: ${friendly_name} Temperature
     visual:
-      min_temperature: 120 °F
-      max_temperature: 140 °F
-      temperature_step: 1.0 °F
-    sensor: outlet_temp
-    min_heating_off_time: 300s
-    min_heating_run_time: 300s
-    min_idle_time: 30s
-    heat_action:
-      - switch.turn_on: fake_switch
-    idle_action:
-      - switch.turn_off: fake_switch
-    
-
-################################
-#### WATER TEMPLATE SENSORS ####
-################################
-sensor:
-  - platform: template
-    name: "WByte_0"
-    id: uart_water_byte0
-    internal: True
-  - platform: template
-    name: "WByte_01"
-    id: uart_water_byte1
-    internal: True
-  - platform: template
-    name: "WByte_02"
-    id: uart_water_byte2
-    internal: True
-  - platform: template
-    name: "WByte_03"
-    id: uart_water_byte3
-    internal: True
-  - platform: template
-    name: "WByte_04"
-    id: uart_water_byte4
-    internal: True
-  - platform: template
-    name: "WByte_05"
-    id: uart_water_byte5
-    internal: True
-  - platform: template
-    name: "WByte_06"
-    id: uart_water_byte6
-    internal: True
-  - platform: template
-    name: "WByte_07"
-    id: uart_water_byte7
-    internal: True
-  - platform: template
-    name: "WByte_08"
-    id: uart_water_byte8
-    internal: True
-  - platform: template
-    name: "WByte_09"
-    id: uart_water_byte9
-    internal: true
-  - platform: template
-    name: "WByte_10"
-    id: uart_water_byte10
-    internal: True
-  - platform: template
-    name: "Temp Set - Read"
-    id: set_temp_read
-    icon: mdi:thermometer-water
-    unit_of_measurement: °C
-    accuracy_decimals: 1
-    device_class: "temperature"
-    state_class: "measurement"
-  - platform: template
-    name: "Temp Outlet"
-    id: outlet_temp
-    icon: mdi:thermometer-water
-    unit_of_measurement: °C
-    accuracy_decimals: 1
-    device_class: "temperature"
-    state_class: "measurement"
-  - platform: template
-    name: "Temp Inlet"
-    id: inlet_temp
-    icon: mdi:thermometer-water
-    unit_of_measurement: °C
-    accuracy_decimals: 1
-    device_class: "temperature"
-    state_class: "measurement"
-  - platform: template
-    name: "WByte_14"
-    id: uart_water_byte14
-    internal: True
-  - platform: template
-    name: "WByte_15"
-    id: uart_water_byte15
-    internal: True
-  - platform: template
-    name: "WByte_16"
-    id: uart_water_byte16
-    internal: True
-  - platform: template
-    name: "WByte_17"
-    id: uart_water_byte17
-    internal: True
-  - platform: template
-    name: "Water Flow LPM"
-    id: water_flow_lpm # multiply by 0.2642 to get GPM
-    icon: mdi:water-percent
-    unit_of_measurement: l/min
-  - platform: template
-    name: "Water Flow GPM"
-    id: water_flow_gpm # this is derived from the Water Flow LPM entity
-    icon: mdi:water-percent
-    unit_of_measurement: GPM
-    lambda: |-
-      return (id(water_flow_lpm).state * 0.2642);
-  - platform: template
-    name: "?Unknown Flow?"
-    id: uart_water_byte19
-    # internal: True
-  - platform: template
-    name: "WByte_20"
-    id: uart_water_byte20
-    internal: True
-  - platform: template
-    name: "WByte_21"
-    id: uart_water_byte21
-    internal: True
-  - platform: template
-    name: "WByte_22"
-    id: uart_water_byte22
-    internal: True
-  - platform: template
-    name: "WByte_23"
-    id: uart_water_byte23
-    internal: True
-  - platform: template
-    name: "?Sys Status?"
-    id: uart_water_byte24
-    # internal: True
-  - platform: template
-    name: "WByte_25"
-    id: uart_water_byte25
-    internal: True
-  - platform: template
-    name: "WByte_26"
-    id: uart_water_byte26
-    internal: True
-  - platform: template
-    name: "WByte_27"
-    id: uart_water_byte27
-    internal: True
-  - platform: template
-    name: "WByte_28"
-    id: uart_water_byte28
-    internal: True
-  - platform: template
-    name: "WByte_29"
-    id: uart_water_byte29
-    internal: True
-  - platform: template
-    name: "WByte_30"
-    id: uart_water_byte30
-    internal: True
-  - platform: template
-    name: "WByte_31"
-    id: uart_water_byte31
-    internal: True
-  - platform: template
-    name: "WByte_32"
-    id: uart_water_byte32
-    internal: True
-  - platform: template
-    name: "WByte_33"
-    id: uart_water_byte33
-    internal: True
-  - platform: template
-    name: "WByte_34"
-    id: uart_water_byte34
-    internal: True
-  - platform: template
-    name: "WByte_35"
-    id: uart_water_byte35
-    internal: True
-  - platform: template
-    name: "WByte_36"
-    id: uart_water_byte36
-    internal: True
-  - platform: template
-    name: "WByte_37"
-    id: uart_water_byte37
-    internal: True
-  - platform: template
-    name: "WByte_38"
-    id: uart_water_byte38
-    internal: True
-  - platform: template
-    name: "WByte_39"
-    id: uart_water_byte39
-    internal: True
-  - platform: template
-    name: "WByte_40"
-    id: uart_water_byte40
-    internal: True
-##############################
-#### GAS TEMPLATE SENSORS ####
-##############################
-  - platform: template
-    name: "GByte_0"
-    id: uart_gas_byte0
-    internal: True
-  - platform: template
-    name: "GByte_01"
-    id: uart_gas_byte1
-    internal: True
-  - platform: template
-    name: "GByte_02"
-    id: uart_gas_byte2
-    internal: True
-  - platform: template
-    name: "GByte_03"
-    id: uart_gas_byte3
-    internal: True
-  - platform: template
-    name: "GByte_04"
-    id: uart_gas_byte4
-    internal: True
-  - platform: template
-    name: "GByte_05"
-    id: uart_gas_byte5
-    internal: True
-  - platform: template
-    name: "GByte_06"
-    id: uart_gas_byte6
-    internal: True
-  - platform: template
-    name: "GByte_07"
-    id: uart_gas_byte7
-    internal: True
-  - platform: template
-    name: "GByte_08"
-    id: uart_gas_byte8
-    internal: True
-  - platform: template
-    name: "GByte_09"
-    id: uart_gas_byte9
-    internal: true
-  - platform: template
-    name: "GByte_10"
-    id: uart_gas_byte10
-    internal: True
-  - platform: template
-    name: "GByte_11"
-    id: uart_gas_byte11
-    internal: True
-  - platform: template
-    name: "GByte_12"
-    id: uart_gas_byte12
-    internal: True
-  - platform: template
-    name: "GByte_13"
-    id: uart_gas_byte13
-    internal: True
-  - platform: template
-    name: "GByte_14"
-    id: uart_gas_byte14
-    internal: True
-  - platform: template
-    name: "GByte_15"
-    id: uart_gas_byte15
-    internal: True
-  - platform: template
-    name: "GByte_16"
-    id: uart_gas_byte16
-    internal: True
-  - platform: template
-    name: "GByte_17"
-    id: uart_gas_byte17
-    internal: True
-  - platform: template
-    name: "GByte_18"
-    id: uart_gas_byte18
-    internal: True
-  - platform: template
-    name: "GByte_19"
-    id: uart_gas_byte19
-    internal: True
-  - platform: template
-    name: "?Heater Capacity?"
-    id: heater_capacity
-    # internal: True
-  - platform: template
-    name: "GByte_21"
-    id: uart_gas_byte21
-    internal: True
-  - platform: template
-    name: "GByte_22"
-    id: uart_gas_byte22
-    internal: True
-  - platform: template
-    name: "GByte_23"
-    id: uart_gas_byte23
-    internal: True
-  - platform: template
-    name: "GByte_24"
-    id: uart_gas_byte24
-    internal: True
-  - platform: template
-    name: "GByte_25"
-    id: uart_gas_byte25
-    internal: True
-  - platform: template
-    name: "GByte_26"
-    id: uart_gas_byte26
-    internal: True
-  - platform: template
-    name: "GByte_27"
-    id: uart_gas_byte27
-    internal: True
-  - platform: template
-    name: "GByte_28"
-    id: uart_gas_byte28
-    internal: True
-  - platform: template
-    name: "GByte_29"
-    id: uart_gas_byte29
-    internal: True
-  - platform: template
-    name: "GByte_30"
-    id: uart_gas_byte30
-    internal: True
-  - platform: template
-    name: "GByte_31"
-    id: uart_gas_byte31
-    internal: True
-  - platform: template
-    name: "GByte_32"
-    id: uart_gas_byte32
-    internal: True
-  - platform: template
-    name: "GByte_33"
-    id: uart_gas_byte33
-    internal: True
-  - platform: template
-    name: "GByte_34"
-    id: uart_gas_byte34
-    internal: True
-  - platform: template
-    name: "GByte_35"
-    id: uart_gas_byte35
-    internal: True
-  - platform: template
-    name: "?Operating Time - Lifetime (Low Byte)?"
-    id: operating_time_low_byte
-    # internal: True
-  - platform: template
-    name: "?Operating Time - Lifetime (High Byte)?"
-    id: operating_time_high_byte
-    # internal: True
-  - platform: template
-    name: "GByte_38"
-    id: uart_gas_byte38
-    internal: True
-  - platform: template
-    name: "GByte_39"
-    id: uart_gas_byte39
-    internal: True
-  - platform: template
-    name: "GByte_40"
-    id: uart_gas_byte40
-    internal: True
-  - platform: template
-    name: "Total Gas Use Cubic Meters"
-    id: total_gas_use_m3 # divide by 2.832 to get CCF
-    icon: mdi:gas-cylinder
-    unit_of_measurement: m³
-    accuracy_decimals: 1
-    internal: False
-  - platform: template
-    name: "Total Gas Use CCF"
-    id: total_gas_use_ccf # this is derived from the entity Total Gas Use Cubic Meters and converts to CCF for comparison to US energy bills.
-    icon: mdi:gas-cylinder
-    unit_of_measurement: CCF
-    accuracy_decimals: 1
-    internal: False
-    lambda: |-
-      return (id(total_gas_use_m3).state/2.832);
-  - platform: template
-    name: "Total Gas Use Therms"
-    id: total_gas_use_therms # this is derived from the entity Total Gas Use CCF and one of the typical measurements for the utility company to bill against in the US.
-    icon: mdi:gas-cylinder   # this multiplier 1.02845 was obtained from my energy bill - it is known as "Therm Factor" on my bill
-    unit_of_measurement: therms
-    accuracy_decimals: 1
-    internal: False
-    lambda: |-
-      return (id(total_gas_use_ccf).state * 1.02845); 
-  - platform: template
-    name: "kCal Low Byte"
-    id: low_byte_kcal
-    icon: mdi:gas-burner
-    unit_of_measurement: kCal
-  - platform: template
-    name: "kCal High Byte"
-    id: high_byte_kcal
-    icon: mdi:gas-burner
-    unit_of_measurement: kCal
-  - platform: template
-    name: "Instant BTUs"
-    id: instant_btus
-    icon: mdi:gas-burner
-    unit_of_measurement: "kbtu/hr"
-    accuracy_decimals: 3
-    state_class: "measurement"
-    lambda: |-
-      return max((id(outlet_temp).state - id(inlet_temp).state) * id(water_flow_gpm).state * 8.334 * 60 / 0.92 / 1000, 0.0);
-  # calculated as shown here https://www.plctalk.net/threads/low-byte-high-byte.78315/
-  - platform: template
-    name: "Total kCal"
-    id: total_kcal
-    icon: mdi:gas-burner
-    unit_of_measurement: kCal
-    accuracy_decimals: 2
-    state_class: "measurement"
-    lambda: |-
-      return (id(high_byte_kcal).state*256) + (id(low_byte_kcal).state); 
-  - platform: template
-    name: "Total Lifetime Hours"
-    id: total_hours
-    icon: mdi:gas-burner
-    unit_of_measurement: h
-    accuracy_decimals: 2
-    state_class: "measurement"
-    lambda: |-
-      return (id(operating_time_high_byte).state*256) + (id(operating_time_low_byte).state);
-
-
-
-    
+      min_temperature: 98
+      max_temperature: 140
+      temperature_step: 1
